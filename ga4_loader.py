@@ -10,6 +10,7 @@ import pandas as pd
 import snowflake.connector
 
 from google.analytics.data_v1beta import BetaAnalyticsDataClient
+from google.analytics.admin_v1beta import AnalyticsAdminServiceClient
 from google.oauth2 import service_account
 
 
@@ -28,6 +29,7 @@ ga4_json = json.loads(os.getenv("GA4_SERVICE_ACCOUNT_JSON"))
 credentials = service_account.Credentials.from_service_account_info(ga4_json)
 
 data_client = BetaAnalyticsDataClient(credentials=credentials)
+admin_client = AnalyticsAdminServiceClient(credentials=credentials)
 
 
 # ==============================
@@ -74,17 +76,21 @@ PAYLOAD_CONFIGS = {
 
 
 # ==============================
-# FETCH ACCOUNTS CONFIFURED
+# FETCH ACCOUNTS
 # ==============================
-properties = [
-    {
-        "opco_name": "sakura",
-        "property_id": "529120987",
-        "property_name": "main_property"
-    }
-]
+accounts_data = []
 
-df_accounts = pd.DataFrame(properties)
+accounts = admin_client.list_account_summaries()
+
+for acc in accounts:
+    for prop in acc.property_summaries:
+        accounts_data.append({
+            "opco_name": acc.display_name,
+            "property_id": prop.property.split("/")[-1],
+            "property_name": prop.display_name
+        })
+
+df_accounts = pd.DataFrame(accounts_data)
 
 
 # ==============================
