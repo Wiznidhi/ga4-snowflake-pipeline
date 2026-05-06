@@ -1,5 +1,5 @@
 # =========================================================
-# GA4 → SNOWFLAKE SILVER MASTER LOADER (GITHUB READY)
+# GA4 → SNOWFLAKE SILVER MASTER LOADER (FINAL CLEAN)
 # =========================================================
 
 import os
@@ -14,7 +14,7 @@ from google.oauth2 import service_account
 
 
 # ==============================
-# DATE (INCREMENTAL LOAD)
+# DATE (YESTERDAY LOAD)
 # ==============================
 yesterday = date.today() - timedelta(days=1)
 START_DATE = yesterday.strftime("%Y-%m-%d")
@@ -22,7 +22,25 @@ END_DATE = yesterday.strftime("%Y-%m-%d")
 
 
 # ==============================
-# AUTH (FROM GITHUB SECRET)
+# VALIDATE ENV
+# ==============================
+required_env = [
+    "GA4_SERVICE_ACCOUNT_JSON",
+    "SNOWFLAKE_USER",
+    "SNOWFLAKE_PASSWORD",
+    "SNOWFLAKE_ACCOUNT",
+    "SNOWFLAKE_WAREHOUSE",
+    "SNOWFLAKE_DATABASE",
+    "SNOWFLAKE_SCHEMA"
+]
+
+for var in required_env:
+    if not os.getenv(var):
+        raise Exception(f"Missing ENV variable: {var}")
+
+
+# ==============================
+# AUTH
 # ==============================
 ga4_json = json.loads(os.getenv("GA4_SERVICE_ACCOUNT_JSON"))
 credentials = service_account.Credentials.from_service_account_info(ga4_json)
@@ -45,7 +63,7 @@ PAYLOAD_CONFIGS = {
             {"name": "totalUsers"},
             {"name": "newUsers"},
             {"name": "sessions"},
-            {"name": "engagedSessions"},
+            {"name": "engagedSessions"}
         ]
     },
     "content_events": {
@@ -67,14 +85,14 @@ PAYLOAD_CONFIGS = {
             {"name": "deviceCategory"}
         ],
         "metrics": [
-            {"name": "totalRevenue"}
+            {"name": "itemRevenue"}  # ✅ FIXED
         ]
     }
 }
 
 
 # ==============================
-# FETCH ACCOUNTS CONFIFURED
+# STATIC PROPERTIES
 # ==============================
 properties = [
     {
@@ -108,21 +126,16 @@ def parse_ga4_row(row, dimensions, metrics):
 all_data = {k: [] for k in PAYLOAD_CONFIGS.keys()}
 
 for _, acc_row in df_accounts.iterrows():
-
     property_id = acc_row["property_id"]
 
     for payload_name, config in PAYLOAD_CONFIGS.items():
-
         print(f"{payload_name} → {property_id}")
 
         request = {
             "property": f"properties/{property_id}",
             "dimensions": config["dimensions"],
             "metrics": config["metrics"],
-            "date_ranges": [{
-                "start_date": START_DATE,
-                "end_date": END_DATE
-            }]
+            "date_ranges": [{"start_date": START_DATE, "end_date": END_DATE}]
         }
 
         try:
@@ -200,6 +213,8 @@ if not df_events.empty:
 # STANDARDIZE ECOMMERCE
 # ==============================
 if not df_ecom.empty:
+    df_ecom["totalRevenue"] = df_ecom["itemRevenue"]  # ✅ FIX
+
     df_ecom_final = df_ecom[[
         "report_date","opco_name","property_id","property_name",
         "deviceCategory","itemName","totalRevenue"
@@ -218,31 +233,21 @@ if not df_ecom.empty:
 
 
 # ==============================
-# COLUMN ALIGNMENT
+# UNION
 # ==============================
-final_cols = [
-    "report_date","opco_name","property_id","property_name",
-    "deviceCategory","country","channelGroup",
-    "pagePath","itemName","eventName",
-    "totalUsers","newUsers","sessions","engagedSessions",
-    "eventCount","keyEvents","totalRevenue"
-]
-
 df_list = []
 
 if 'df_traffic_final' in locals():
-    df_list.append(df_traffic_final[final_cols])
+    df_list.append(df_traffic_final)
 
 if 'df_events_final' in locals():
-    df_list.append(df_events_final[final_cols])
+    df_list.append(df_events_final)
 
 if 'df_ecom_final' in locals():
-    df_list.append(df_ecom_final[final_cols])
-
+    df_list.append(df_ecom_final)
 
 if not df_list:
-    print("No data fetched")
-    exit()
+    raise Exception("No data fetched from GA4")
 
 df_final = pd.concat(df_list, ignore_index=True)
 
@@ -269,7 +274,6 @@ conn = snowflake.connector.connect(
 
 cursor = conn.cursor()
 
-# CREATE TABLE
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS ga4_silver_master_v2 (
     report_date DATE,
@@ -295,18 +299,14 @@ CREATE TABLE IF NOT EXISTS ga4_silver_master_v2 (
 )
 """)
 
-# ==============================
-# DEDUP (IMPORTANT)
-# ==============================
+# Dedup
 cursor.execute(f"""
 DELETE FROM ga4_silver_master_v2
 WHERE report_date = '{START_DATE}'
 """)
 
-# ==============================
-# FAST INSERT
-# ==============================
-data = [tuple(row.fillna(None)) for _, row in df_final.iterrows()]
+# Insert
+data = [tuple(row) for row in df_final.to_numpy()]
 
 cursor.executemany("""
 INSERT INTO ga4_silver_master_v2 VALUES (
