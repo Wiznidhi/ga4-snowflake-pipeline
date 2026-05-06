@@ -22,6 +22,7 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install --no-cache-dir -r requirements.txt
+          pip install google-analytics-admin
 
       - name: Debug installed packages
         run: pip list
