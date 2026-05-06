@@ -1,5 +1,4 @@
 pandas
 snowflake-connector-python
 google-analytics-data
-google-analytics-admin
 google-auth
