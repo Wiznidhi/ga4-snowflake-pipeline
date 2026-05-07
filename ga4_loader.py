@@ -4,7 +4,7 @@
 
 import os
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import pandas as pd
 import snowflake.connector
@@ -449,10 +449,38 @@ AND '{END_DATE}'
 # INSERT DATA
 # =========================================================
 
-data = [
-    tuple(row)
-    for row in df_final.to_numpy()
-]
+# Convert all dataframe columns to Python native objects
+df_final = df_final.astype(object)
+
+# Replace pandas NaN with Python None
+df_final = df_final.where(pd.notnull(df_final), None)
+
+# Convert rows to tuples
+data = []
+
+for row in df_final.itertuples(index=False, name=None):
+
+    clean_row = []
+
+    for value in row:
+
+        # Convert pandas Timestamp to string
+        if isinstance(value, pd.Timestamp):
+            clean_row.append(
+                value.strftime("%Y-%m-%d %H:%M:%S")
+            )
+
+        # Convert date objects to string
+        elif isinstance(value, date):
+            clean_row.append(
+                value.strftime("%Y-%m-%d")
+            )
+
+        else:
+            clean_row.append(value)
+
+    data.append(tuple(clean_row))
+
 
 cursor.executemany("""
 INSERT INTO ga4_silver_master_v2 VALUES (
@@ -461,7 +489,6 @@ INSERT INTO ga4_silver_master_v2 VALUES (
     %s,%s,%s,%s,%s,%s,%s,%s,%s,%s
 )
 """, data)
-
 
 # =========================================================
 # COMMIT
