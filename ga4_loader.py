@@ -358,11 +358,17 @@ df_final = pd.concat(
 # TECH COLUMNS
 # =========================================================
 
-df_final["ingestion_timestamp"] = pd.Timestamp.now()
+df_final["ingestion_timestamp"] = (
+    pd.Timestamp.now()
+    .strftime("%Y-%m-%d %H:%M:%S")
+)
 
 df_final["source_system"] = "ga4"
 
-df_final["load_date"] = pd.Timestamp.now().date()
+df_final["load_date"] = (
+    pd.Timestamp.now()
+    .strftime("%Y-%m-%d")
+)
 
 
 # =========================================================
