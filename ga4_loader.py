@@ -216,15 +216,9 @@ if not df_ecom.empty:
     df_ecom["totalRevenue"] = df_ecom["itemRevenue"]  # ✅ FIX
 
     df_ecom_final = df_ecom[[
-        "report_date",
-        "opco_name",
-        "property_id",
-        "property_name",
-        "itemName",
-        "totalRevenue"
+        "report_date","opco_name","property_id","property_name",
+        "deviceCategory","itemName","totalRevenue"
     ]].copy()
-
-df_ecom_final["deviceCategory"] = None
 
     df_ecom_final["country"] = None
     df_ecom_final["channelGroup"] = None
