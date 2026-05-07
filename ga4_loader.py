@@ -438,13 +438,17 @@ df_final = pd.concat(
 # =========================================================
 
 df_final["ingestion_timestamp"] = (
-    datetime.now()
+    datetime.now().strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
 )
 
 df_final["source_system"] = "ga4"
 
 df_final["load_date"] = (
-    date.today()
+    date.today().strftime(
+        "%Y-%m-%d"
+    )
 )
 
 
@@ -584,6 +588,53 @@ def clean_value(value):
 # PREPARE INSERT DATA
 # =========================================================
 
+def clean_value(value):
+    """
+    Convert all dataframe values into
+    Snowflake-safe primitive Python types.
+    """
+
+    # Handle NULLs
+    if pd.isna(value):
+        return None
+
+    # Pandas Timestamp
+    if isinstance(value, pd.Timestamp):
+
+        return value.strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+
+    # Python datetime
+    if isinstance(value, datetime):
+
+        return value.strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+
+    # Python date
+    if isinstance(value, date):
+
+        return value.strftime(
+            "%Y-%m-%d"
+        )
+
+    # Numpy integer
+    if isinstance(value, np.integer):
+        return int(value)
+
+    # Numpy float
+    if isinstance(value, np.floating):
+        return float(value)
+
+    # Numpy bool
+    if isinstance(value, np.bool_):
+        return bool(value)
+
+    return value
+
+
+# Build insert rows
 data = []
 
 for row in df_final.itertuples(
@@ -599,16 +650,51 @@ for row in df_final.itertuples(
 
 
 # =========================================================
-# INSERT DATA
+# INSERT INTO SNOWFLAKE
 # =========================================================
 
-cursor.executemany("""
-INSERT INTO ga4_silver_master_v2 VALUES (
+insert_sql = """
+INSERT INTO ga4_silver_master_v2 (
+
+    report_date,
+    opco_name,
+    property_id,
+    property_name,
+
+    deviceCategory,
+    country,
+    channelGroup,
+
+    pagePath,
+    itemName,
+    eventName,
+
+    totalUsers,
+    newUsers,
+    sessions,
+    engagedSessions,
+
+    eventCount,
+    keyEvents,
+
+    totalRevenue,
+
+    ingestion_timestamp,
+    source_system,
+    load_date
+
+)
+VALUES (
 
     %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
     %s,%s,%s,%s,%s,%s,%s,%s,%s,%s
 )
-""", data)
+"""
+
+cursor.executemany(
+    insert_sql,
+    data
+)
 
 
 # =========================================================
