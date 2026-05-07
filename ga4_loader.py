@@ -1,5 +1,5 @@
 # =========================================================
-# GA4 → SNOWFLAKE SILVER MASTER LOADER (FINAL CLEAN)
+# GA4 → SNOWFLAKE SILVER MASTER LOADER
 # =========================================================
 
 import os
@@ -13,17 +13,23 @@ from google.analytics.data_v1beta import BetaAnalyticsDataClient
 from google.oauth2 import service_account
 
 
-# ==============================
-# DATE (YESTERDAY LOAD)
-# ==============================
-yesterday = date.today() - timedelta(days=1)
-START_DATE = yesterday.strftime("%Y-%m-%d")
-END_DATE = yesterday.strftime("%Y-%m-%d")
+# =========================================================
+# DATE RANGE
+# =========================================================
+# Pull last 30 days excluding latest 2 days
+# because GA4 data can be delayed
+
+start_day = date.today() - timedelta(days=30)
+end_day = date.today() - timedelta(days=2)
+
+START_DATE = start_day.strftime("%Y-%m-%d")
+END_DATE = end_day.strftime("%Y-%m-%d")
 
 
-# ==============================
-# VALIDATE ENV
-# ==============================
+# =========================================================
+# VALIDATE ENV VARIABLES
+# =========================================================
+
 required_env = [
     "GA4_SERVICE_ACCOUNT_JSON",
     "SNOWFLAKE_USER",
@@ -39,18 +45,40 @@ for var in required_env:
         raise Exception(f"Missing ENV variable: {var}")
 
 
-# ==============================
-# AUTH
-# ==============================
+# =========================================================
+# AUTHENTICATION
+# =========================================================
+
 ga4_json = json.loads(os.getenv("GA4_SERVICE_ACCOUNT_JSON"))
-credentials = service_account.Credentials.from_service_account_info(ga4_json)
 
-data_client = BetaAnalyticsDataClient(credentials=credentials)
+credentials = service_account.Credentials.from_service_account_info(
+    ga4_json
+)
+
+data_client = BetaAnalyticsDataClient(
+    credentials=credentials
+)
 
 
-# ==============================
-# CONFIG
-# ==============================
+# =========================================================
+# PROPERTY CONFIG
+# =========================================================
+
+properties = [
+    {
+        "opco_name": "sakura",
+        "property_id": "529120987",
+        "property_name": "main_property"
+    }
+]
+
+df_accounts = pd.DataFrame(properties)
+
+
+# =========================================================
+# PAYLOAD CONFIG
+# =========================================================
+
 PAYLOAD_CONFIGS = {
     "traffic_audience": {
         "dimensions": [
@@ -66,6 +94,7 @@ PAYLOAD_CONFIGS = {
             {"name": "engagedSessions"}
         ]
     },
+
     "content_events": {
         "dimensions": [
             {"name": "date"},
@@ -78,6 +107,9 @@ PAYLOAD_CONFIGS = {
             {"name": "keyEvents"}
         ]
     },
+
+    # OPTIONAL
+    # Remove if ecommerce not enabled
     "ecommerce": {
         "dimensions": [
             {"name": "date"},
@@ -85,101 +117,129 @@ PAYLOAD_CONFIGS = {
             {"name": "deviceCategory"}
         ],
         "metrics": [
-            {"name": "itemRevenue"}  # ✅ FIXED
+            {"name": "itemRevenue"}
         ]
     }
 }
 
 
-# ==============================
-# STATIC PROPERTIES
-# ==============================
-properties = [
-    {
-        "opco_name": "sakura",
-        "property_id": "529120987",
-        "property_name": "main_property"
-    }
-]
+# =========================================================
+# HELPER FUNCTION
+# =========================================================
 
-df_accounts = pd.DataFrame(properties)
-
-
-# ==============================
-# HELPER
-# ==============================
 def parse_ga4_row(row, dimensions, metrics):
+
     record = {}
 
     for i, dim in enumerate(dimensions):
         record[dim["name"]] = row.dimension_values[i].value
 
     for i, met in enumerate(metrics):
-        record[met["name"]] = float(row.metric_values[i].value)
+
+        value = row.metric_values[i].value
+
+        try:
+            record[met["name"]] = float(value)
+        except:
+            record[met["name"]] = 0
 
     return record
 
 
-# ==============================
+# =========================================================
 # FETCH DATA
-# ==============================
-all_data = {k: [] for k in PAYLOAD_CONFIGS.keys()}
+# =========================================================
+
+all_data = {
+    k: [] for k in PAYLOAD_CONFIGS.keys()
+}
 
 for _, acc_row in df_accounts.iterrows():
+
     property_id = acc_row["property_id"]
 
     for payload_name, config in PAYLOAD_CONFIGS.items():
-        print(f"{payload_name} → {property_id}")
+
+        print(f"\nRUNNING → {payload_name} | {property_id}")
 
         request = {
             "property": f"properties/{property_id}",
             "dimensions": config["dimensions"],
             "metrics": config["metrics"],
-            "date_ranges": [{"start_date": START_DATE, "end_date": END_DATE}]
+            "date_ranges": [{
+                "start_date": START_DATE,
+                "end_date": END_DATE
+            }]
         }
 
         try:
+
             response = data_client.run_report(request)
 
             if not response.rows:
+                print(f"NO ROWS → {payload_name}")
                 continue
 
+            print(f"ROWS FETCHED → {len(response.rows)}")
+
             for row in response.rows:
-                record = parse_ga4_row(row, config["dimensions"], config["metrics"])
+
+                record = parse_ga4_row(
+                    row,
+                    config["dimensions"],
+                    config["metrics"]
+                )
 
                 record["opco_name"] = acc_row["opco_name"]
                 record["property_id"] = property_id
                 record["property_name"] = acc_row["property_name"]
 
                 record["report_date"] = pd.to_datetime(
-                    record["date"], format="%Y%m%d"
+                    record["date"],
+                    format="%Y%m%d"
                 ).date()
 
                 all_data[payload_name].append(record)
 
         except Exception as e:
-            print(f"FAILED → {payload_name} | {property_id}")
-            print(e)
+
+            print(f"FAILED → {payload_name}")
+            print(str(e))
+
+            continue
 
 
-# ==============================
-# DATAFRAMES
-# ==============================
+# =========================================================
+# CREATE DATAFRAMES
+# =========================================================
+
 df_traffic = pd.DataFrame(all_data["traffic_audience"])
 df_events = pd.DataFrame(all_data["content_events"])
 df_ecom = pd.DataFrame(all_data["ecommerce"])
 
 
-# ==============================
+# =========================================================
 # STANDARDIZE TRAFFIC
-# ==============================
+# =========================================================
+
 if not df_traffic.empty:
-    df_traffic["channelGroup"] = df_traffic["sessionDefaultChannelGroup"]
+
+    df_traffic["channelGroup"] = (
+        df_traffic["sessionDefaultChannelGroup"]
+    )
 
     df_traffic_final = df_traffic[[
-        "report_date","opco_name","property_id","property_name",
-        "deviceCategory","country","channelGroup",
-        "totalUsers","newUsers","sessions","engagedSessions"
+        "report_date",
+        "opco_name",
+        "property_id",
+        "property_name",
+        "deviceCategory",
+        "country",
+        "channelGroup",
+        "totalUsers",
+        "newUsers",
+        "sessions",
+        "engagedSessions"
     ]].copy()
 
     df_traffic_final["pagePath"] = None
@@ -190,18 +250,28 @@ if not df_traffic.empty:
     df_traffic_final["totalRevenue"] = 0
 
 
-# ==============================
+# =========================================================
 # STANDARDIZE EVENTS
-# ==============================
+# =========================================================
+
 if not df_events.empty:
+
     df_events_final = df_events[[
-        "report_date","opco_name","property_id","property_name",
-        "deviceCategory","pagePath","eventName","eventCount","keyEvents"
+        "report_date",
+        "opco_name",
+        "property_id",
+        "property_name",
+        "deviceCategory",
+        "pagePath",
+        "eventName",
+        "eventCount",
+        "keyEvents"
     ]].copy()
 
     df_events_final["country"] = None
     df_events_final["channelGroup"] = None
     df_events_final["itemName"] = None
+
     df_events_final["totalUsers"] = 0
     df_events_final["newUsers"] = 0
     df_events_final["sessions"] = 0
@@ -209,21 +279,29 @@ if not df_events.empty:
     df_events_final["totalRevenue"] = 0
 
 
-# ==============================
+# =========================================================
 # STANDARDIZE ECOMMERCE
-# ==============================
+# =========================================================
+
 if not df_ecom.empty:
-    df_ecom["totalRevenue"] = df_ecom["itemRevenue"]  # ✅ FIX
+
+    df_ecom["totalRevenue"] = df_ecom["itemRevenue"]
 
     df_ecom_final = df_ecom[[
-        "report_date","opco_name","property_id","property_name",
-        "deviceCategory","itemName","totalRevenue"
+        "report_date",
+        "opco_name",
+        "property_id",
+        "property_name",
+        "deviceCategory",
+        "itemName",
+        "totalRevenue"
     ]].copy()
 
     df_ecom_final["country"] = None
     df_ecom_final["channelGroup"] = None
     df_ecom_final["pagePath"] = None
     df_ecom_final["eventName"] = None
+
     df_ecom_final["totalUsers"] = 0
     df_ecom_final["newUsers"] = 0
     df_ecom_final["sessions"] = 0
@@ -232,37 +310,75 @@ if not df_ecom.empty:
     df_ecom_final["keyEvents"] = 0
 
 
-# ==============================
-# UNION
-# ==============================
+# =========================================================
+# COLUMN ALIGNMENT
+# =========================================================
+
+final_cols = [
+    "report_date",
+    "opco_name",
+    "property_id",
+    "property_name",
+    "deviceCategory",
+    "country",
+    "channelGroup",
+    "pagePath",
+    "itemName",
+    "eventName",
+    "totalUsers",
+    "newUsers",
+    "sessions",
+    "engagedSessions",
+    "eventCount",
+    "keyEvents",
+    "totalRevenue"
+]
+
 df_list = []
 
-if 'df_traffic_final' in locals():
-    df_list.append(df_traffic_final)
+if "df_traffic_final" in locals():
+    df_list.append(df_traffic_final[final_cols])
 
-if 'df_events_final' in locals():
-    df_list.append(df_events_final)
+if "df_events_final" in locals():
+    df_list.append(df_events_final[final_cols])
 
-if 'df_ecom_final' in locals():
-    df_list.append(df_ecom_final)
+if "df_ecom_final" in locals():
+    df_list.append(df_ecom_final[final_cols])
 
 if not df_list:
     raise Exception("No data fetched from GA4")
 
-df_final = pd.concat(df_list, ignore_index=True)
+df_final = pd.concat(
+    df_list,
+    ignore_index=True
+)
 
 
-# ==============================
+# =========================================================
 # TECH COLUMNS
-# ==============================
+# =========================================================
+
 df_final["ingestion_timestamp"] = pd.Timestamp.now()
+
 df_final["source_system"] = "ga4"
+
 df_final["load_date"] = pd.Timestamp.now().date()
 
 
-# ==============================
-# SNOWFLAKE LOAD
-# ==============================
+# =========================================================
+# REPLACE NaN WITH NULL
+# =========================================================
+
+df_final = df_final.where(
+    pd.notnull(df_final),
+    None
+)
+
+
+# =========================================================
+# SNOWFLAKE CONNECTION
+# =========================================================
+
 conn = snowflake.connector.connect(
     user=os.getenv("SNOWFLAKE_USER"),
     password=os.getenv("SNOWFLAKE_PASSWORD"),
@@ -274,48 +390,79 @@ conn = snowflake.connector.connect(
 
 cursor = conn.cursor()
 
+
+# =========================================================
+# CREATE TABLE
+# =========================================================
+
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS ga4_silver_master_v2 (
+
     report_date DATE,
     opco_name STRING,
     property_id STRING,
     property_name STRING,
+
     deviceCategory STRING,
     country STRING,
     channelGroup STRING,
+
     pagePath STRING,
     itemName STRING,
     eventName STRING,
+
     totalUsers NUMBER,
     newUsers NUMBER,
     sessions NUMBER,
     engagedSessions NUMBER,
+
     eventCount NUMBER,
     keyEvents NUMBER,
+
     totalRevenue FLOAT,
+
     ingestion_timestamp TIMESTAMP,
     source_system STRING,
     load_date DATE
 )
 """)
 
-# Dedup
+
+# =========================================================
+# DEDUP
+# =========================================================
+
 cursor.execute(f"""
 DELETE FROM ga4_silver_master_v2
-WHERE report_date = '{START_DATE}'
+WHERE report_date BETWEEN '{START_DATE}'
+AND '{END_DATE}'
 """)
 
-# Insert
-data = [tuple(row) for row in df_final.to_numpy()]
+
+# =========================================================
+# INSERT DATA
+# =========================================================
+
+data = [
+    tuple(row)
+    for row in df_final.to_numpy()
+]
 
 cursor.executemany("""
 INSERT INTO ga4_silver_master_v2 VALUES (
-    %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
-    %s,%s,%s,%s,%s,%s,%s
+
+    %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+    %s,%s,%s,%s,%s,%s,%s,%s,%s,%s
 )
 """, data)
+
+
+# =========================================================
+# COMMIT
+# =========================================================
 
 conn.commit()
 conn.close()
 
-print("SILVER MASTER LOAD COMPLETE")
+print("\nSILVER MASTER LOAD COMPLETE")
+print(f"ROWS LOADED → {len(df_final)}")
